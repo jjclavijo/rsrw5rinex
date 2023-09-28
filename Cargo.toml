@@ -1,0 +1,16 @@
+[package]
+name = "rw5_file_parser"
+version = "0.1.0"
+edition = "2018"
+
+# This is a library project, not an executable
+[lib]
+name = "rw5_file_parser"
+path = "src/lib.rs"
+
+# Specify dependencies here if needed
+[dependencies]
+
+[profile.test]
+panic = "abort"
+
