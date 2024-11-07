@@ -10,6 +10,17 @@ path = "src/lib.rs"
 
 # Specify dependencies here if needed
 [dependencies]
+chrono = "*"
+anyhow = "*"
+itertools = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+clap = { version = "*", features = ["derive"] }
+derive_more = { version = "1", features = ["from"] }
+rinex = { path = "/home/javier/proy/rinex/rinex" }
+
+[dev-dependencies]
+tempfile = "*"
 
 [profile.test]
 panic = "abort"

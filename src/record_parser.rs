@@ -1,17 +1,24 @@
 // record_parser.rs
 
-use std::error::Error;
+//use std::error::Error;
 
 // A GENERIC ERROR FOR PARSING FIELD
 
+use anyhow::anyhow;
+use rinex::prelude::{Duration, Epoch};
+use std::convert::TryFrom;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use serde::Serialize;
+use crate::record_parser_gps as gps;
+
 #[derive(Debug)]
-struct CustomError {
+pub struct CustomError {
     message: String,
     field: String,
 }
 
 impl CustomError {
-    fn new(message: &str, field: &str) -> Self {
+    pub fn new(message: &str, field: &str) -> Self {
         CustomError {
             message: message.to_string(),
             field: field.to_string(),
@@ -26,6 +33,111 @@ impl std::fmt::Display for CustomError {
 }
 
 impl std::error::Error for CustomError {}
+
+#[derive(Debug, PartialEq,Default,Clone,Serialize)]
+pub struct TRecord {
+    date: Option<(i32,u8,u8)>,
+    time: Option<(u8,u8,u8)>,
+    dt: Option<Epoch>
+}
+
+impl TRecord {
+    pub fn with_date(&self, t:(i32,u8,u8)) -> TRecord {
+        TRecord { date: Some(t), time: self.time, dt: self.dt }
+    }
+    pub fn with_time(&self, t:(u8,u8,u8)) -> TRecord {
+        TRecord { date: self.date, time: Some(t), dt: self.dt }
+    }
+    pub fn combine(self) -> TRecord {
+        match self {
+            TRecord { date: Some(d), time: Some(t), dt: _ } =>
+                TRecord { date: self.date, time: self.time,
+                          dt: Some(
+                               Epoch::from_gregorian_tai(d.0,d.1,d.2,t.0,t.1,t.2,0)
+                               ) 
+                },
+            _ => self.clone()
+        }
+    }
+
+    pub fn merge(self, other: TRecord) -> Result<TRecord, anyhow::Error> {
+        match self {
+            TRecord { date: Some(d), time: None, dt: _ } =>
+                match other {
+                    TRecord { date: None, time: Some(t), dt: _ } =>
+                        Ok(TRecord::default().with_time(t).with_date(d).combine()),
+                    TRecord { date: Some(d1), time: Some(_t), dt: _ } =>
+                        if d1 == d {
+                            Ok(other)
+                        } else {
+                            Err(anyhow!("Fechas incompatibles"))
+                        },
+                    TRecord { date: Some(d1), time: None, dt: _ } =>
+                        if d1 == d {
+                            Ok(other)
+                        } else {
+                            Err(anyhow!("Fechas incompatibles"))
+                        },
+                    _ => Ok(self)
+                }
+            TRecord { date: None, time: Some(t), dt: _ } =>
+                match other {
+                    TRecord { date: Some(d), time: None, dt: _ } =>
+                        Ok(TRecord::default().with_time(t).with_date(d).combine()),
+                    TRecord { date: Some(_d), time: Some(t1), dt: _ } =>
+                        if t1 == t {
+                            Ok(other)
+                        } else {
+                            Err(anyhow!("Horas incompatibles"))
+                        }
+                    TRecord { date: None, time: Some(t1), dt: _ } =>
+                        if t1 == t {
+                            Ok(other)
+                        } else {
+                            Err(anyhow!("Horas incompatibles"))
+                        }
+                    _ => Ok(self)
+                }
+            TRecord { date: None, time: None, dt: _ } => {
+                Err(anyhow!("Nada que combinar"))
+            }
+            TRecord { date: Some(_), time: Some(_), dt: _ } => {
+                Err(anyhow!("Ya está combinado"))
+            }
+        }
+    }
+
+    pub fn get_epoch(&self) -> Epoch {
+        match self.dt {
+            None => Epoch::from_gpst_duration(Duration::from_seconds(0.)),
+            Some(v) => v
+        }
+    }
+}
+
+crate::genera_try_from!(TRecord = TRecord, merge);
+
+pub fn parse_dt_record(line: &str) -> Result<TRecord, anyhow::Error>
+{
+    let (cabeza, pies) = line.split_at(4);
+    let tr = match cabeza {
+        "--DT" => {
+            let (mm,r) = pies.split_once('-').unwrap();
+            let (dd,yyyy) = r.split_once('-').unwrap();
+            Ok(TRecord::default().with_date((yyyy.parse()?, mm.parse()?, dd.parse()?)))
+        },
+        "--TM" => {
+            let (hh,r) = pies.split_once(':').unwrap();
+            let (mm,ss) = r.split_once(':').unwrap();
+            Ok(TRecord::default().with_time((hh.parse()?, mm.parse()?, ss.parse()?)))
+        },
+        _ => {
+            Err(anyhow!("Registro de tiempo invalido"))
+        }
+    }?;
+
+    Ok(tr.combine())
+}
 
 #[derive(Debug, PartialEq)]
 pub struct BacksightRecord {
@@ -142,7 +254,7 @@ pub fn parse_label_record(line: &str) -> Result<(), Box<dyn std::error::Error>> 
 
 // Add other record structs as needed
 
-pub fn parse_backsight_record(line: &str) -> Result<BacksightRecord, Box<dyn Error>> {
+pub fn parse_backsight_record(line: &str) -> Result<BacksightRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
     if parts.len() >= 5 {
         let op = parts[1].trim_start_matches("OP").to_string();
@@ -155,7 +267,7 @@ pub fn parse_backsight_record(line: &str) -> Result<BacksightRecord, Box<dyn Err
     }
 }
 
-pub fn parse_job_record(line: &str) -> Result<JobRecord, Box<dyn Error>> {
+pub fn parse_job_record(line: &str) -> Result<JobRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
     if parts.len() >= 4 {
         let nm = parts[1].trim_start_matches("NM").to_string();
@@ -167,7 +279,7 @@ pub fn parse_job_record(line: &str) -> Result<JobRecord, Box<dyn Error>> {
     }
 }
 
-pub fn parse_line_of_sight_record(line: &str) -> Result<LineOfSightRecord, Box<dyn Error>> {
+pub fn parse_line_of_sight_record(line: &str) -> Result<LineOfSightRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
     if parts.len() >= 2 {
         let hi = parts[1].trim_start_matches("HI").parse::<f64>()?;
@@ -178,7 +290,7 @@ pub fn parse_line_of_sight_record(line: &str) -> Result<LineOfSightRecord, Box<d
     }
 }
 
-pub fn parse_mode_setup_record(line: &str) -> Result<ModeSetupRecord, Box<dyn Error>> {
+pub fn parse_mode_setup_record(line: &str) -> Result<ModeSetupRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
     if parts.len() >= 7 {
         let ad = parts[1].trim_start_matches("AD").parse::<u32>()?;
@@ -193,21 +305,24 @@ pub fn parse_mode_setup_record(line: &str) -> Result<ModeSetupRecord, Box<dyn Er
     }
 }
 
-pub fn parse_occupy_record(line: &str) -> Result<OccupyRecord, Box<dyn Error>> {
+pub fn parse_occupy_record(line: &str) -> Result<OccupyRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
-    if parts.len() >= 6 {
+    if parts.len() >= 5 {
         let op = parts[1].trim_start_matches("OP").to_string();
         let n = parts[2].trim_start_matches("N ").parse::<f64>()?;
         let e = parts[3].trim_start_matches("E ").parse::<f64>()?;
         let el = parts[4].trim_start_matches("EL").parse::<f64>()?;
-        let note = parts[5].to_string();
+        let mut note: String = "".to_string();
+        if parts.len() == 6 {
+            note = parts[5].to_string();
+        };
         Ok(OccupyRecord { op, n, e, el, note })
     } else {
         Err("Invalid Occupy record format".into())
     }
 }
 
-pub fn parse_off_center_shot_record(line: &str) -> Result<OffCenterShotRecord, Box<dyn Error>> {
+pub fn parse_off_center_shot_record(line: &str) -> Result<OffCenterShotRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
     if parts.len() >= 4 {
         let ar = parts[1].trim_start_matches("AR").parse::<f64>()?;
@@ -219,7 +334,7 @@ pub fn parse_off_center_shot_record(line: &str) -> Result<OffCenterShotRecord, B
     }
 }
 
-pub fn parse_store_point_record(line: &str) -> Result<StorePointRecord, Box<dyn Error>> {
+pub fn parse_store_point_record(line: &str) -> Result<StorePointRecord, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = line.split(',').collect();
     if parts.len() >= 5 {
         let pn = parts[1].trim_start_matches("PN").to_string();
@@ -236,7 +351,7 @@ pub fn parse_store_point_record(line: &str) -> Result<StorePointRecord, Box<dyn 
     }
 }
 
-fn parse_traverse_record(line: &str) -> Result<TraverseRecord, Box<dyn Error>> {
+fn parse_traverse_record(line: &str) -> Result<TraverseRecord, Box<dyn std::error::Error>> {
     let fields: Vec<&str> = line.split(',').collect();
     if fields.len() > 7 {
         return Err("Invalid traverse record format".into());
@@ -279,6 +394,8 @@ fn parse_traverse_record(line: &str) -> Result<TraverseRecord, Box<dyn Error>> {
         note,
     })
 }
+
+
 
 
 pub fn parse_record_line(line: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -335,6 +452,7 @@ pub fn parse_record_line(line: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
 
 
 
